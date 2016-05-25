@@ -169,6 +169,17 @@ CREATE MATERIALIZED VIEW dhcphost AS
     {%- else %}
     foreign_dhcphost.ipaddress IS NOT NULL
     {%- endif %}
+   GROUP BY
+    {%- if HADES_POSTGRESQL_FOREIGN_TABLE_DHCPHOST_MAC_STRING %}
+    safe_macaddr_cast(foreign_dhcphost.mac),
+    {%- else %}
+    foreign_dhcphost.mac,
+    {%- endif %}
+    {%- if HADES_POSTGRESQL_FOREIGN_TABLE_DHCPHOST_IPADDRESS_STRING %}
+    safe_inet_cast(foreign_dhcphost.ipaddress)
+    {%- else %}
+    foreign_dhcphost.ipaddress
+    {%- endif %}
   WITH DATA;
 
 
@@ -202,7 +213,7 @@ ALTER FOREIGN TABLE foreign_nas OWNER TO "{{ HADES_POSTGRESQL_USER }}";
 --
 
 CREATE FOREIGN TABLE foreign_radcheck (
-    id integer NOT NULL,
+    priority integer,
     username character varying(64) NOT NULL,
     {%- if HADES_POSTGRESQL_FOREIGN_TABLE_RADCHECK_NASIPADDRESS_STRING %}
     nasipaddress character varying(15),
@@ -227,7 +238,7 @@ ALTER FOREIGN TABLE foreign_radcheck OWNER TO "{{ HADES_POSTGRESQL_USER }}";
 --
 
 CREATE FOREIGN TABLE foreign_radgroupcheck (
-    id integer NOT NULL,
+    priority integer,
     groupname character varying(64) NOT NULL,
     attribute character varying(64) NOT NULL,
     op character(2) NOT NULL,
@@ -246,7 +257,7 @@ ALTER FOREIGN TABLE foreign_radgroupcheck OWNER TO "{{ HADES_POSTGRESQL_USER }}"
 --
 
 CREATE FOREIGN TABLE foreign_radgroupreply (
-    id integer NOT NULL,
+    priority integer,
     groupname character varying(64) NOT NULL,
     attribute character varying(64) NOT NULL,
     op character(2) NOT NULL,
@@ -265,7 +276,7 @@ ALTER FOREIGN TABLE foreign_radgroupreply OWNER TO "{{ HADES_POSTGRESQL_USER }}"
 --
 
 CREATE FOREIGN TABLE foreign_radreply (
-    id integer NOT NULL,
+    priority integer,
     username character varying(64) NOT NULL,
     {%- if HADES_POSTGRESQL_FOREIGN_TABLE_RADREPLY_NASIPADDRESS_STRING %}
     nasipaddress character varying(15),
@@ -298,7 +309,7 @@ CREATE FOREIGN TABLE foreign_radusergroup (
     {%- endif %}
     nasportid character varying(15),
     groupname character varying(64) NOT NULL,
-    priority integer NOT NULL
+    priority integer
 )
 SERVER {{ server_name }}
 OPTIONS (
@@ -399,7 +410,7 @@ ALTER SEQUENCE radacct_radacctid_seq OWNED BY radacct.radacctid;
 --
 
 CREATE MATERIALIZED VIEW radcheck AS
- SELECT foreign_radcheck.id,
+ SELECT ROW_NUMBER() OVER w AS priority,
     foreign_radcheck.username,
     {%- if HADES_POSTGRESQL_FOREIGN_TABLE_RADCHECK_NASIPADDRESS_STRING %}
     safe_inet_cast(foreign_radcheck.nasipaddress) AS nasipaddress,
@@ -415,6 +426,7 @@ CREATE MATERIALIZED VIEW radcheck AS
     AND attribute IS NOT NULL
     AND op IS NOT NULL
     AND value IS NOT NULL
+   WINDOW w AS (PARTITION BY foreign_radcheck.username, foreign_radcheck.nasipaddress, foreign_radcheck.nasportid ORDER BY foreign_radcheck.priority)
   WITH DATA;
 
 
@@ -425,7 +437,7 @@ ALTER TABLE radcheck OWNER TO "{{ HADES_AGENT_USER }}";
 --
 
 CREATE MATERIALIZED VIEW radgroupcheck AS
- SELECT foreign_radgroupcheck.id,
+ SELECT ROW_NUMBER() OVER w AS priority,
     foreign_radgroupcheck.groupname,
     foreign_radgroupcheck.attribute,
     foreign_radgroupcheck.op,
@@ -435,6 +447,7 @@ CREATE MATERIALIZED VIEW radgroupcheck AS
     AND attribute IS NOT NULL
     AND op IS NOT NULL
     AND value IS NOT NULL
+   WINDOW w AS (PARTITION BY foreign_radgroupcheck.groupname ORDER BY foreign_radgroupcheck.priority)
   WITH DATA;
 
 
@@ -445,7 +458,7 @@ ALTER TABLE radgroupcheck OWNER TO "{{ HADES_AGENT_USER }}";
 --
 
 CREATE MATERIALIZED VIEW radgroupreply AS
- SELECT foreign_radgroupreply.id,
+ SELECT ROW_NUMBER() OVER w AS priority,
     foreign_radgroupreply.groupname,
     foreign_radgroupreply.attribute,
     foreign_radgroupreply.op,
@@ -455,6 +468,7 @@ CREATE MATERIALIZED VIEW radgroupreply AS
     AND attribute IS NOT NULL
     AND op IS NOT NULL
     AND value IS NOT NULL
+   WINDOW w AS (PARTITION BY foreign_radgroupreply.groupname ORDER BY foreign_radgroupreply.priority)
   WITH DATA;
 
 
@@ -503,7 +517,7 @@ ALTER SEQUENCE radpostauth_id_seq OWNED BY radpostauth.id;
 --
 
 CREATE MATERIALIZED VIEW radreply AS
- SELECT foreign_radreply.id,
+ SELECT ROW_NUMBER() OVER w AS priority,
     foreign_radreply.username,
     {%- if HADES_POSTGRESQL_FOREIGN_TABLE_RADREPLY_NASIPADDRESS_STRING %}
     safe_inet_cast(foreign_radreply.nasipaddress) AS nasipaddress,
@@ -519,6 +533,7 @@ CREATE MATERIALIZED VIEW radreply AS
     AND attribute IS NOT NULL
     AND op IS NOT NULL
     AND value IS NOT NULL
+   WINDOW w AS (PARTITION BY foreign_radreply.username, foreign_radreply.nasipaddress, foreign_radreply.nasportid ORDER BY foreign_radreply.priority)
   WITH DATA;
 
 
@@ -537,10 +552,11 @@ CREATE MATERIALIZED VIEW radusergroup AS
     {%- endif %}
     foreign_radusergroup.nasportid,
     foreign_radusergroup.groupname,
-    foreign_radusergroup.priority
+    ROW_NUMBER() OVER w AS priority
    FROM foreign_radusergroup
    WHEERE username IS NOT NULL
     AND groupname IS NOT NULL
+   WINDOW w AS (PARTITION BY foreign_radusergroup.username, foreign_radusergroup.nasipaddress, foreign_radusergroup.nasportid ORDER BY foreign_radusergroup.priority)
   WITH DATA;
 
 
@@ -613,24 +629,24 @@ CREATE INDEX radacct_start_user_idx ON radacct USING btree (acctstarttime, usern
 
 
 --
--- Name: radcheck_username_idx; Type: INDEX; Schema: public; Owner: {{ HADES_AGENT_USER }}; Tablespace:
+-- Name: radcheck_user_idx; Type: INDEX; Schema: public; Owner: {{ HADES_AGENT_USER }}; Tablespace:
 --
 
-CREATE INDEX radcheck_username_idx ON radcheck USING btree (username);
-
-
---
--- Name: radgroupcheck_groupname_idx; Type: INDEX; Schema: public; Owner: {{ HADES_AGENT_USER }}; Tablespace:
---
-
-CREATE INDEX radgroupcheck_groupname_idx ON radgroupcheck USING btree (groupname);
+CREATE UNIQUE INDEX radcheck_user_idx ON radcheck USING btree (username, nasipaddress, nasportid, priority);
 
 
 --
--- Name: radgroupreply_groupname_idx; Type: INDEX; Schema: public; Owner: {{ HADES_AGENT_USER }}; Tablespace:
+-- Name: radgroupcheck_group_idx; Type: INDEX; Schema: public; Owner: {{ HADES_AGENT_USER }}; Tablespace:
 --
 
-CREATE INDEX radgroupreply_groupname_idx ON radgroupreply USING btree (groupname);
+CREATE UNIQUE INDEX radgroupcheck_group_idx ON radgroupcheck USING btree (groupname, priority);
+
+
+--
+-- Name: radgroupreply_group_idx; Type: INDEX; Schema: public; Owner: {{ HADES_AGENT_USER }}; Tablespace:
+--
+
+CREATE UNIQUE INDEX radgroupreply_group_idx ON radgroupreply USING btree (groupname, priority);
 
 
 --
@@ -648,17 +664,17 @@ CREATE INDEX radpostauth_username_idx ON radpostauth USING btree (username);
 
 
 --
--- Name: radreply_username_idx; Type: INDEX; Schema: public; Owner: {{ HADES_AGENT_USER }}; Tablespace:
+-- Name: radreply_user_idx; Type: INDEX; Schema: public; Owner: {{ HADES_AGENT_USER }}; Tablespace:
 --
 
-CREATE INDEX radreply_username_idx ON radreply USING btree (username);
+CREATE UNIQUE INDEX radreply_user_idx ON radreply USING btree (username, nasipaddress, nasportid, priority);
 
 
 --
--- Name: radusergroup_username_idx; Type: INDEX; Schema: public; Owner: {{ HADES_AGENT_USER }}; Tablespace:
+-- Name: radusergroup_membership_idx; Type: INDEX; Schema: public; Owner: {{ HADES_AGENT_USER }}; Tablespace:
 --
 
-CREATE INDEX radusergroup_username_idx ON radusergroup USING btree (username);
+CREATE UNIQUE INDEX radusergroup_membership_idx ON radusergroup USING btree (username, groupname, priority);
 
 
 --
