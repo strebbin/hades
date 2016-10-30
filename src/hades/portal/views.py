@@ -56,7 +56,7 @@ def index():
         return content, 500
     if mac is None:
         content = render_template("error.html",
-                                  error=_("No MAC address could be found for "
+                                  message=_("No MAC address could be found for "
                                           "your IP address {}".format(ip)))
         return content, 500
     mac_groups = get_groups(mac)
